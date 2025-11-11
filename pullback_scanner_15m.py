@@ -24,18 +24,41 @@ TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 
-# ===== 지표 계산 =====
+# ===== 지표 계산 (안전한 1D 대입) =====
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    c = df["Close"]
-    v = df["Volume"]
-    df["EMA20"] = EMAIndicator(close=c, window=20).ema_indicator()
-    df["EMA50"] = EMAIndicator(close=c, window=50).ema_indicator()
-    df["RSI"] = RSIIndicator(close=c, window=14).rsi()
-    df["VolMA20"] = v.rolling(20).mean()
-    df["VolRel"] = v / (df["VolMA20"] + 1e-9)
+    # yfinance 표준 컬럼 보장
+    for col in ["Close", "Volume"]:
+        if col not in df.columns:
+            raise KeyError(f"Column '{col}' not found in downloaded data")
+
+    c = pd.Series(pd.to_numeric(df["Close"], errors="coerce").values, index=df.index, name="Close")
+    v = pd.Series(pd.to_numeric(df["Volume"], errors="coerce").values, index=df.index, name="Volume")
+
+    # EMA
+    ema20 = EMAIndicator(close=c, window=20).ema_indicator()
+    ema50 = EMAIndicator(close=c, window=50).ema_indicator()
+    df["EMA20"] = pd.Series(np.asarray(ema20).reshape(-1), index=df.index)
+    df["EMA50"] = pd.Series(np.asarray(ema50).reshape(-1), index=df.index)
+
+    # RSI
+    rsi = RSIIndicator(close=c, window=14).rsi()
+    df["RSI"] = pd.Series(np.asarray(rsi).reshape(-1), index=df.index)
+
+    # 거래량 지표
+    volma20 = v.rolling(20).mean()
+    df["VolMA20"] = pd.Series(np.asarray(volma20).reshape(-1), index=df.index)
+    df["VolRel"] = pd.Series(
+        (v.values / (np.asarray(volma20).reshape(-1) + 1e-9)),
+        index=df.index,
+    )
+
+    # 볼린저 밴드
     bb = BollingerBands(close=c, window=20, window_dev=2)
-    df["BB_H"] = bb.bollinger_hband()
-    df["BB_L"] = bb.bollinger_lband()
+    bb_h = bb.bollinger_hband()
+    bb_l = bb.bollinger_lband()
+    df["BB_H"] = pd.Series(np.asarray(bb_h).reshape(-1), index=df.index)
+    df["BB_L"] = pd.Series(np.asarray(bb_l).reshape(-1), index=df.index)
+
     return df
 
 
@@ -141,4 +164,5 @@ if __name__ == "__main__":
 
     # 텔레그램 알림 전송
     send_telegram(msg)
+
 
