@@ -1,3 +1,4 @@
+@@ -1,72 +1,139 @@
 """
 Pullback Scanner (15m)
 - EMA20/EMA50 추세 + RSI 쿨다운 + 고점대비 -5~-12% + 거래량 건조 조건
@@ -11,9 +12,11 @@ import yfinance as yf
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import BollingerBands
+import os, requests
 import os
 import requests
 
+TICKER_FILE = "tickers.txt"
 # ===== 기본 설정 =====
 TICKER_FILE = "tickers.txt"   # 루트에 배치
 INTERVAL = "15m"
@@ -23,6 +26,8 @@ PERIOD = "10d"
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
+def add_indicators(df):
+    c, v = df["Close"], df["Volume"]
 
 # ===== 보조지표 계산 =====
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -33,11 +38,16 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["RSI"] = RSIIndicator(c, 14).rsi()
     df["VolMA20"] = v.rolling(20).mean()
     df["VolRel"] = v / (df["VolMA20"] + 1e-9)
+    bb = BollingerBands(c, 20, 2)
+    df["BB_H"], df["BB_L"] = bb.bollinger_hband(), bb.bollinger_lband()
     bb = BollingerBands(close=c, window=20, window_dev=2)
     df["BB_H"] = bb.bollinger_hband()
     df["BB_L"] = bb.bollinger_lband()
     return df
 
+def detect_pullback(ticker):
+    df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False, auto_adjust=True)
+    if df.empty:
 
 # ===== 눌림목 감지 (단일 티커) =====
 def detect_pullback(ticker: str):
@@ -55,11 +65,16 @@ def detect_pullback(ticker: str):
         return None
 
     df = add_indicators(df)
+    df["FromHigh"] = df["Close"] / df["Close"].cummax() - 1
     # 최근 고점 대비 낙폭
     df["FromHigh"] = df["Close"] / df["Close"].cummax() - 1.0
 
     # 눌림목 후보 조건
     cond = (
+        (df["EMA20"] > df["EMA50"]) &
+        (df["RSI"].between(45, 60)) &
+        (df["FromHigh"].between(-0.12, -0.05)) &
+        (df["VolRel"] < 0.85)
         (df["EMA20"] > df["EMA50"]) &                # 상승 추세
         (df["RSI"].between(45, 60)) &               # 과열 식힘
         (df["FromHigh"].between(-0.12, -0.05)) &    # 고점대비 -5% ~ -12%
@@ -73,11 +88,17 @@ def detect_pullback(ticker: str):
     last = pb.iloc[-1]
     return {
         "Ticker": ticker,
+        "Close": round(last.Close, 2),
+        "RSI": round(last.RSI, 1),
+        "Drop%": round(last.FromHigh * 100, 1)
         "Close": float(round(last["Close"], 2)),
         "RSI": float(round(last["RSI"], 1)),
         "Drop%": float(round(last["FromHigh"] * 100.0, 1))
     }
 
+def scan_all():
+    with open(TICKER_FILE, "r") as f:
+        tickers = [t.strip() for t in f.readlines() if t.strip()]
 
 # ===== 전체 스캔 =====
 def scan_all() -> pd.DataFrame:
@@ -92,6 +113,7 @@ def scan_all() -> pd.DataFrame:
         sig = detect_pullback(t)
         if sig:
             results.append(sig)
+    return pd.DataFrame(results)
 
     if not results:
         return pd.DataFrame(columns=["Ticker", "Close", "RSI", "Drop%"])
@@ -125,6 +147,12 @@ if __name__ == "__main__":
     else:
         print("🔍 눌림목 신호 감지:")
         print(df)
+        if TG_BOT_TOKEN and TG_CHAT_ID:
+            msg = "🔔 눌림목 신호 발생 종목:
+" + "
+".join(df["Ticker"])
+            url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+            requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg})
         tickers_list = "\n".join(df["Ticker"].astype(str).tolist())
         msg = "🔔 눌림목 신호 발생 종목:\n" + tickers_list
 
